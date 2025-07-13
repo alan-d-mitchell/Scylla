@@ -281,9 +281,131 @@ u64 rookAttacks(u64 occ, int sq) {
    return mRookTbl[sq].ptr[occ];
 }
 
+// Generate move functions
+
+int is_square_attacked(int square, int side, const Board* board) {
+    // Pawn
+    if ((pawn_attacks[!side][square] & board->piece_bitboards[side == WHITE ? P : p])) return 1;
+
+    // Knight
+    if ((knight_attacks[square] & board->piece_bitboards[side == WHITE ? N : n])) return 1;
+
+    // Bishop
+    if (bishopAttacks(board->occupancies[2], square) & (board->piece_bitboards[side == WHITE ? B : b] | board->piece_bitboards[side == WHITE ? Q : q])) return 1;
+
+    // Rook
+    if (rookAttacks(board->occupancies[2], square) & (board->piece_bitboards[side == WHITE ? R : r] | board->piece_bitboards[side == WHITE ? Q : q])) return 1;
+    
+    // King
+    if ((king_attacks[square] & board->piece_bitboards[side == WHITE ? K : k])) return 1;
+
+    return 0;
+}
+
+void generate_all_pawn_moves(const Board* board, MoveList* move_list) {
+    int side = board->side_to_move;
+    u64 my_pawns = board->piece_bitboards[side == WHITE ? P : p];
+    u64 enemy_pieces = board->occupancies[!side];
+    u64 all_pieces = board->occupancies[BOTH];
+
+    int from_square, to_square;
+
+    // White promotes on rank 8, Black promotes on rank 1.
+    u64 promotion_rank = (side == WHITE) ? 0xFF00000000000000ULL : 0x00000000000000FFULL;
+
+    // --- 1. Pawn Pushes and Promotions ---
+    u64 single_pushes = (side == WHITE) ? (my_pawns << 8) & ~all_pieces : (my_pawns >> 8) & ~all_pieces;
+    u64 rank_for_double_push = (side == WHITE) ? 0x000000000000FF00ULL : 0x00FF000000000000ULL;
+    u64 pawns_on_start_rank = my_pawns & rank_for_double_push;
+    u64 double_push_targets = (side == WHITE) ? (pawns_on_start_rank << 16) : (pawns_on_start_rank >> 16);
+    u64 double_pushes = (side == WHITE) ? ((single_pushes & (rank_for_double_push << 8)) << 8) & ~all_pieces : ((single_pushes & (rank_for_double_push >> 8)) >> 8) & ~all_pieces;
+
+
+    u64 quiet_pushes = single_pushes & ~promotion_rank;
+    while (quiet_pushes) {
+        to_square = __builtin_ctzll(quiet_pushes);
+        from_square = (side == WHITE) ? to_square - 8 : to_square + 8;
+        move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), 0, 0, 0, 0};
+        quiet_pushes &= quiet_pushes - 1;
+    }
+
+    u64 promo_pushes = single_pushes & promotion_rank;
+    while (promo_pushes) {
+        to_square = __builtin_ctzll(promo_pushes);
+        from_square = (side == WHITE) ? to_square - 8 : to_square + 8;
+        move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), (side == WHITE ? Q : q), 0, 0, 0};
+        move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), (side == WHITE ? R : r), 0, 0, 0};
+        move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), (side == WHITE ? B : b), 0, 0, 0};
+        move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), (side == WHITE ? N : n), 0, 0, 0};
+        promo_pushes &= promo_pushes - 1;
+    }
+
+    while (double_pushes) {
+        to_square = __builtin_ctzll(double_pushes);
+        from_square = (side == WHITE) ? to_square - 16 : to_square + 16;
+        move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), 0, 0, 0, 0};
+        double_pushes &= double_pushes - 1;
+    }
+
+    // --- 2. Pawn Captures ---
+    u64 pawns_to_capture_from = my_pawns;
+    while(pawns_to_capture_from) {
+        from_square = __builtin_ctzll(pawns_to_capture_from);
+        u64 attacks = pawn_attacks[side][from_square] & enemy_pieces;
+
+        u64 capture_promos = attacks & promotion_rank;
+        while(capture_promos) {
+            to_square = __builtin_ctzll(capture_promos);
+            move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), (side == WHITE ? Q : q), 1, 0, 0};
+            move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), (side == WHITE ? R : r), 1, 0, 0};
+            move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), (side == WHITE ? B : b), 1, 0, 0};
+            move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), (side == WHITE ? N : n), 1, 0, 0};
+            capture_promos &= capture_promos - 1;
+        }
+
+        u64 normal_captures = attacks & ~promotion_rank;
+        while(normal_captures) {
+            to_square = __builtin_ctzll(normal_captures);
+            move_list->moves[move_list->count++] = (Move){from_square, to_square, (side == WHITE ? P : p), 0, 1, 0, 0};
+            normal_captures &= normal_captures - 1;
+        }
+
+        // --- 3. En Passant ---
+        if (board->enpassant_square != -1) {
+            u64 ep_attack = pawn_attacks[side][from_square] & (1ULL << board->enpassant_square);
+            if (ep_attack) {
+                move_list->moves[move_list->count++] = (Move){from_square, board->enpassant_square, (side == WHITE ? P : p), 0, 1, 1, 0};
+            }
+        }
+        pawns_to_capture_from &= pawns_to_capture_from - 1;
+    }
+}
+
+
+void generate_all_knight_moves(const Board* board, MoveList* move_list) {
+    int side = board->side_to_move;
+    u64 friendlies = board->occupancies[side];
+    u64 enemies = board->occupancies[!side];
+    u64 knights = board->piece_bitboards[side == WHITE ? N : n];
+
+     while (knights) {
+        int from_square = __builtin_ctzll(knights);
+        u64 attacks = knight_attacks[from_square];
+        u64 valid_moves = attacks & ~friendlies;
+        
+        while (valid_moves) {
+            int to_square = __builtin_ctzll(valid_moves);
+            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? N : n), .is_capture = (enemies & (1ULL << to_square)) ? 1 : 0, 0, 0 };
+            valid_moves &= valid_moves - 1;
+        }
+
+        knights &= knights - 1;
+    }
+}
+
 void generate_all_bishop_moves(const Board* board, MoveList* move_list) {
     int side = board->side_to_move;
-    u64 friendly_pieces = board->occupancies[side];// Rook attack check would go here...
+    u64 friendly_pieces = board->occupancies[side];
     u64 bishops = board->piece_bitboards[side == WHITE ? B : b];
 
     while (bishops) {
@@ -293,7 +415,7 @@ void generate_all_bishop_moves(const Board* board, MoveList* move_list) {
 
         while (valid_moves) {
             int to_square = __builtin_ctzll(valid_moves);
-            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? B : b), .is_capture = (board->occupancies[!side] & (1ULL << to_square)) ? 1 : 0 };
+            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? B : b), .is_capture = (board->occupancies[!side] & (1ULL << to_square)) ? 1 : 0, 0, 0 };
            
             valid_moves &= valid_moves - 1;
         }
@@ -320,7 +442,7 @@ void generate_all_rook_moves(const Board* board, MoveList* move_list) {
         while (valid_moves) {
             int to_square = __builtin_ctzll(valid_moves);
             // Create and add the move to the move list
-            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? R : r), .is_capture = (board->occupancies[!side] & (1ULL << to_square)) ? 1 : 0 };
+            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? R : r), .is_capture = (board->occupancies[!side] & (1ULL << to_square)) ? 1 : 0, 0, 0 };
             // Clear the 'to' bit to continue the loop
             valid_moves &= valid_moves - 1;
         }
@@ -351,105 +473,12 @@ void generate_all_queen_moves(const Board* board, MoveList* move_list) {
         while (valid_moves) {
             int to_square = __builtin_ctzll(valid_moves);
             // Create and add the move to the move list
-            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? Q : q), .is_capture = (board->occupancies[!side] & (1ULL << to_square)) ? 1 : 0 };
+            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? Q : q), .is_capture = (board->occupancies[!side] & (1ULL << to_square)) ? 1 : 0, 0, 0 };
             // Clear the 'to' bit to continue the loop
             valid_moves &= valid_moves - 1;
         }
         // Clear the 'from' bit to continue the outer loop
         queens &= queens - 1;
-    }
-}
-
-int is_square_attacked(int square, int side, const Board* board) {
-    if ((pawn_attacks[!side][square] & board->piece_bitboards[side == WHITE ? P : p])) return 1;
-    if ((knight_attacks[square] & board->piece_bitboards[side == WHITE ? N : n])) return 1;
-    if ((king_attacks[square] & board->piece_bitboards[side == WHITE ? K : k])) return 1;
-    if (bishopAttacks(board->occupancies[2], square) & (board->piece_bitboards[side == WHITE ? B : b] | board->piece_bitboards[side == WHITE ? Q : q])) return 1;
-    if (rookAttacks(board->occupancies[2], square) & (board->piece_bitboards[side == WHITE ? R : r] | board->piece_bitboards[side == WHITE ? Q : q])) return 1;
-    
-    return 0;
-}
-
-void generate_all_pawn_moves(const Board* board, MoveList* move_list) {
-    int side = board->side_to_move;
-    u64 my_pawns = board->piece_bitboards[side == WHITE ? P : p];
-    u64 enemy_pieces = board->occupancies[!side];
-    u64 all_pieces = board->occupancies[2];
-    int push_direction = (side == WHITE) ? 8 : -8;
-    u64 rank_7 = (side == WHITE) ? 0x00FF000000000000ULL : 0x000000000000FF00ULL;
-    u64 rank_3 = (side == WHITE) ? 0x0000000000FF0000ULL : 0x0000FF0000000000ULL;
-    int promotion_piece_start = (side == WHITE) ? N : n;
-    int promotion_piece_end = (side == WHITE) ? Q : q;
-
-    u64 single_pushes = (side == WHITE ? (my_pawns << 8) : (my_pawns >> 8)) & ~all_pieces;
-    u64 double_pushes = (side == WHITE ? ((single_pushes & rank_3) << 8) : ((single_pushes & rank_3) >> 8)) & ~all_pieces;
-
-    u64 pushes = single_pushes;
-    while (pushes) {
-        int to_square = __builtin_ctzll(pushes);
-        int from_square = to_square - push_direction;
-        if ((1ULL << from_square) & rank_7) {
-            for (int promo_piece = promotion_piece_start; promo_piece <= promotion_piece_end; promo_piece++) {
-                move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? P : p), .promotion = promo_piece };
-            }
-        } else {
-            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? P : p) };
-        }
-        pushes &= pushes - 1;
-    }
-
-    pushes = double_pushes;
-    while (pushes) {
-        int to_square = __builtin_ctzll(pushes);
-        int from_square = to_square - (push_direction * 2);
-        move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? P : p) };
-        pushes &= pushes - 1;
-    }
-
-    u64 pawns_for_capture = my_pawns;
-    while (pawns_for_capture) {
-        int from_square = __builtin_ctzll(pawns_for_capture);
-        u64 attacks = pawn_attacks[side][from_square] & enemy_pieces;
-        while (attacks) {
-            int to_square = __builtin_ctzll(attacks);
-            if ((1ULL << from_square) & rank_7) {
-                for (int promo_piece = promotion_piece_start; promo_piece <= promotion_piece_end; promo_piece++) {
-                    move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? P : p), .promotion = promo_piece, .is_capture = 1 };
-                }
-            } else {
-                move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? P : p), .is_capture = 1 };
-            }
-            attacks &= attacks - 1;
-        }
-        pawns_for_capture &= pawns_for_capture - 1;
-    }
-
-    if (board->enpassant_square != -1) {
-        u64 ep_attackers = pawn_attacks[!side][board->enpassant_square] & my_pawns;
-        while (ep_attackers) {
-            int from_square = __builtin_ctzll(ep_attackers);
-            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = board->enpassant_square, .piece = (side == WHITE ? P : p), .is_capture = 1, .is_enpassant = 1 };
-            ep_attackers &= ep_attackers - 1;
-        }
-    }
-}
-
-void generate_all_knight_moves(const Board* board, MoveList* move_list) {
-    int side = board->side_to_move;
-    u64 friendlies = board->occupancies[side];
-    u64 enemies = board->occupancies[!side];
-    u64 knights = board->piece_bitboards[side == WHITE ? N : n];
-
-     while (knights) {
-        int from_square = __builtin_ctzll(knights);
-        u64 attacks = knight_attacks[from_square];
-        u64 valid_moves = attacks & ~friendlies;
-        while (valid_moves) {
-            int to_square = __builtin_ctzll(valid_moves);
-            move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? N : n), .is_capture = (enemies & (1ULL << to_square)) ? 1 : 0 };
-            valid_moves &= valid_moves - 1;
-        }
-        knights &= knights - 1;
     }
 }
 
@@ -462,29 +491,33 @@ void generate_all_king_moves(const Board* board, MoveList* move_list) {
 
     while (valid_moves) {
         int to_square = __builtin_ctzll(valid_moves);
-        move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? K : k), .is_capture = (board->occupancies[!side] & (1ULL << to_square)) ? 1 : 0 };
+        move_list->moves[move_list->count++] = (Move){ .from = from_square, .to = to_square, .piece = (side == WHITE ? K : k), .is_capture = (board->occupancies[!side] & (1ULL << to_square)) ? 1 : 0, 0, 0 };
         valid_moves &= valid_moves - 1;
+    }
+
+    if (is_square_attacked(from_square, !side, board)) {
+        return; // King in check, no castling allowed
     }
 
     if (side == WHITE) {
         if ((board->castling_rights & WK) && !((board->occupancies[2] >> (f1)) & 1) && !((board->occupancies[2] >> (g1)) & 1)) {
-            if (!is_square_attacked(e1, BLACK, board) && !is_square_attacked(f1, BLACK, board)) {
+            if (!is_square_attacked(e1, BLACK, board) && !is_square_attacked(f1, BLACK, board) && !is_square_attacked(g1, BLACK, board)) {
                 move_list->moves[move_list->count++] = (Move){ .from = e1, .to = g1, .piece = K, .is_castle = 1 };
             }
         }
         if ((board->castling_rights & WQ) && !((board->occupancies[2] >> (d1)) & 1) && !((board->occupancies[2] >> (c1)) & 1) && !((board->occupancies[2] >> (b1)) & 1)) {
-            if (!is_square_attacked(e1, BLACK, board) && !is_square_attacked(d1, BLACK, board)) {
+            if (!is_square_attacked(e1, BLACK, board) && !is_square_attacked(d1, BLACK, board) && !is_square_attacked(c1, BLACK, board)) {
                 move_list->moves[move_list->count++] = (Move){ .from = e1, .to = c1, .piece = K, .is_castle = 1 };
             }
         }
     } else {
         if ((board->castling_rights & BK) && !((board->occupancies[2] >> (f8)) & 1) && !((board->occupancies[2] >> (g8)) & 1)) {
-            if (!is_square_attacked(e8, WHITE, board) && !is_square_attacked(f8, WHITE, board)) {
+            if (!is_square_attacked(e8, WHITE, board) && !is_square_attacked(f8, WHITE, board) && !is_square_attacked(g8, WHITE, board)) {
                 move_list->moves[move_list->count++] = (Move){ .from = e8, .to = g8, .piece = k, .is_castle = 1 };
             }
         }
         if ((board->castling_rights & BQ) && !((board->occupancies[2] >> (d8)) & 1) && !((board->occupancies[2] >> (c8)) & 1) && !((board->occupancies[2] >> (b8)) & 1)) {
-            if (!is_square_attacked(e8, WHITE, board) && !is_square_attacked(d8, WHITE, board)) {
+            if (!is_square_attacked(e8, WHITE, board) && !is_square_attacked(d8, WHITE, board) && !is_square_attacked(c8, WHITE, board)) {
                 move_list->moves[move_list->count++] = (Move){ .from = e8, .to = c8, .piece = k, .is_castle = 1 };
             }
         }
