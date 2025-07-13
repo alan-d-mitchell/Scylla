@@ -1,9 +1,9 @@
 #include <stdlib.h> // For abs()
-#include <string.h> // For parse_fen
-#include <ctype.h> // For toupper
+#include <string.h> // For strtok, strcpy, etc.
+#include <ctype.h>  // For toupper()
 
 #include "board.h"
-#include "movegen.h"
+#include "movegen.h" 
 
 // This array is used to efficiently update castling rights during make_move.
 const int castling_rights_update[64] = {
@@ -24,7 +24,7 @@ const char* square_to_algebraic[] = {
     "a7", "b7", "c7", "d7", "e7", "f7", "g7", "h7", "a8", "b8", "c8", "d8", "e8", "f8", "g8", "h8"
 };
 
-// Helper array to map piece enum to a character for printing promotions
+// Helper array to map piece enum to a character. Note: No leading space.
 const char piece_to_char[] = "PNBRQKpnbrqk";
 
 // --- Helper Functions ---
@@ -57,63 +57,65 @@ static void remove_piece(Board* board, int square, int piece) {
 
 // --- Main Functions ---
 void make_move(Board* board, Move move) {
-    // 1. Store undo info
     board->history[board->ply].castling_rights = board->castling_rights;
     board->history[board->ply].enpassant_square = board->enpassant_square;
-    board->history[board->ply].captured_piece = -1; // Default to no capture
+    board->history[board->ply].captured_piece = -1;
 
-    // 2. Update castling rights based on any piece movement from/to key squares
-    board->castling_rights &= castling_rights_update[move.from];
-    board->castling_rights &= castling_rights_update[move.to];
-
-    // 3. Reset en passant square (will be set later if it's a double push)
-    board->enpassant_square = -1;
-
-    // 4. --- CRITICAL: Handle captures BEFORE moving the main piece ---
+    // Handle captures before moving the piece to avoid overwriting the target square.
     if (move.is_capture) {
         if (move.is_enpassant) {
             int captured_pawn_sq = (board->side_to_move == WHITE) ? move.to - 8 : move.to + 8;
             int captured_pawn = (board->side_to_move == WHITE) ? p : P;
+
             remove_piece(board, captured_pawn_sq, captured_pawn);
             board->history[board->ply].captured_piece = captured_pawn;
-        } else {
+        } 
+        else {
             // Find and remove the piece on the destination square
             int captured_start = (board->side_to_move == WHITE) ? p : P;
             int captured_end = (board->side_to_move == WHITE) ? k : K;
+
             for (int piece = captured_start; piece <= captured_end; piece++) {
                 if ((1ULL << move.to) & board->piece_bitboards[piece]) {
                     remove_piece(board, move.to, piece);
                     board->history[board->ply].captured_piece = piece;
+
                     break;
                 }
             }
         }
     }
-
-    // 5. --- Now, move the piece ---
+    
+    // Now move the piece
     move_piece(board, move.from, move.to, move.piece);
 
-    // 6. Handle special move details
+    // Update castling rights
+    board->castling_rights &= castling_rights_update[move.from];
+    board->castling_rights &= castling_rights_update[move.to];
+
+    // Update en-passant square, resetting it first
+    board->enpassant_square = -1;
+    if (move.piece == P || move.piece == p) {
+        if (abs(move.from - move.to) == 16) {
+            board->enpassant_square = (board->side_to_move == WHITE) ? move.to - 8 : move.to + 8;
+        }
+    }
+    
+    // Handle other special move types
     if (move.promotion) {
-        // The pawn is now on the 'to' square. Remove it and add the new piece.
-        remove_piece(board, move.to, move.piece);
-        add_piece(board, move.to, move.promotion);
-    } else if (move.is_castle) {
-        // Move the corresponding rook
+        remove_piece(board, move.to, move.piece); // Remove the pawn
+        add_piece(board, move.to, move.promotion); // Add the new piece
+    }
+    else if (move.is_castle) {
         switch (move.to) {
             case g1: move_piece(board, h1, f1, R); break;
             case c1: move_piece(board, a1, d1, R); break;
             case g8: move_piece(board, h8, f8, r); break;
             case c8: move_piece(board, a8, d8, r); break;
         }
-    } else if (move.piece == P || move.piece == p) {
-         // Set new en passant square if it was a double pawn push
-        if (abs(move.from - move.to) == 16) {
-            board->enpassant_square = (board->side_to_move == WHITE) ? move.to - 8 : move.to + 8;
-        }
     }
 
-    // 7. Update game state
+    // Update side to move and ply
     board->side_to_move = !board->side_to_move;
     board->ply++;
 }
@@ -126,21 +128,17 @@ void unmake_move(Board* board, Move move) {
     board->castling_rights = undo.castling_rights;
     board->enpassant_square = undo.enpassant_square;
 
-    // 1. Determine which piece was on the 'to' square to move it back.
-    // For a promotion, it was the new piece (e.g., Queen), not the pawn.
+    // Determine which piece to move back (handles promotions)
     int piece_that_moved = move.promotion ? move.promotion : move.piece;
-
-    // 2. Move that piece from its destination back to its origin.
     move_piece(board, move.to, move.from, piece_that_moved);
 
-    // 3. If the move was a promotion, the piece on the 'from' square is now
-    // the promoted piece. We need to remove it and put the original pawn back.
+    // If it was a promotion, revert the piece type
     if (move.promotion) {
         remove_piece(board, move.from, move.promotion);
-        add_piece(board, move.from, move.piece); // move.piece is the pawn
+        add_piece(board, move.from, move.piece);
     }
 
-    // 4. If the move was castling, move the rook back as well.
+    // Un-do castling by moving the rook back
     if (move.is_castle) {
         switch (move.to) {
             case g1: move_piece(board, f1, h1, R); break;
@@ -149,21 +147,19 @@ void unmake_move(Board* board, Move move) {
             case c8: move_piece(board, d8, a8, r); break;
         }
     }
-
-    // 5. If a piece was captured, add it back to the board LAST.
+    
+    // Add back any captured piece LAST
     if (undo.captured_piece != -1) {
         int captured_sq = move.to;
+
         if (move.is_enpassant) {
-            // If en-passant, the captured pawn goes on a different square
             captured_sq = (board->side_to_move == WHITE) ? move.to - 8 : move.to + 8;
         }
         add_piece(board, captured_sq, undo.captured_piece);
     }
 }
 
-
 void parse_fen(Board* board, const char* fen) {
-    // Reset board state
     memset(board->piece_bitboards, 0, sizeof(board->piece_bitboards));
     memset(board->occupancies, 0, sizeof(board->occupancies));
 
@@ -171,26 +167,22 @@ void parse_fen(Board* board, const char* fen) {
     board->enpassant_square = -1;
     board->castling_rights = 0;
     
-    // Use a mutable copy of the FEN string for strtok
     char fen_copy[256];
     strncpy(fen_copy, fen, 255);
     fen_copy[255] = '\0';
 
-    char* token;
-
-    // 1. Piece Placement
-    token = strtok(fen_copy, " ");
-    int rank = 7;
-    int file = 0;
+    char* token = strtok(fen_copy, " ");
+    int rank = 7, file = 0;
 
     for (size_t i = 0; i < strlen(token); i++) {
         char c = token[i];
-        if (c == '/') {
-            rank--;
-            file = 0;
-        } else if (c >= '1' && c <= '8') {
-            file += c - '0';
-        } else {
+        if (c == '/') { 
+            rank--; file = 0; 
+        }
+        else if (c >= '1' && c <= '8') {
+            file += c - '0'; 
+        }
+        else {
             int square = rank * 8 + file;
             int piece_type = -1;
 
@@ -202,6 +194,7 @@ void parse_fen(Board* board, const char* fen) {
                 case 'b': piece_type=b; break; case 'r': piece_type=r; break;
                 case 'q': piece_type=q; break; case 'k': piece_type=k; break;
             }
+
             if (piece_type != -1) {
                 set_bit(&board->piece_bitboards[piece_type], square, 1);
             }
@@ -209,11 +202,9 @@ void parse_fen(Board* board, const char* fen) {
         }
     }
 
-    // 2. Side to Move
     token = strtok(NULL, " ");
     board->side_to_move = (strcmp(token, "w") == 0) ? WHITE : BLACK;
 
-    // 3. Castling Rights
     token = strtok(NULL, " ");
     for (size_t i = 0; i < strlen(token); i++) {
         switch (token[i]) {
@@ -224,28 +215,26 @@ void parse_fen(Board* board, const char* fen) {
         }
     }
 
-    // 4. En Passant Square
     token = strtok(NULL, " ");
     if (strcmp(token, "-") != 0) {
-        int ep_file = token[0] - 'a';
-        int ep_rank = token[1] - '1';
-
-        board->enpassant_square = ep_rank * 8 + ep_file;
+        board->enpassant_square = (token[0] - 'a') + (token[1] - '1') * 8;
     }
 
-    // Populate occupancy bitboards
     for (int piece = P; piece <= K; piece++) board->occupancies[WHITE] |= board->piece_bitboards[piece];
     for (int piece = p; piece <= k; piece++) board->occupancies[BLACK] |= board->piece_bitboards[piece];
-
-    board->occupancies[2] = board->occupancies[WHITE] | board->occupancies[BLACK];
+    board->occupancies[BOTH] = board->occupancies[WHITE] | board->occupancies[BLACK];
 }
 
-// San Converter
 void move_to_san(char* san_string, Board* board, Move move) {
     if (move.is_castle) {
-        if (move.to > move.from) strcpy(san_string, "O-O");
-        else strcpy(san_string, "O-O-O");
-    } else {
+        if (move.to > move.from) {
+            strcpy(san_string, "O-O");
+        }
+        else {
+            strcpy(san_string, "O-O-O");
+        }
+    } 
+    else {
         char to_str[3];
         strcpy(to_str, square_to_algebraic[move.to]);
         san_string[0] = '\0';
@@ -253,7 +242,8 @@ void move_to_san(char* san_string, Board* board, Move move) {
         if (move.piece != P && move.piece != p) {
             char piece_ch[2] = { toupper(piece_to_char[move.piece]), '\0' };
             strcat(san_string, piece_ch);
-        } else if (move.is_capture) {
+        } 
+        else if (move.is_capture) {
             char from_file[2] = { square_to_algebraic[move.from][0], '\0' };
             strcat(san_string, from_file);
         }
@@ -261,9 +251,12 @@ void move_to_san(char* san_string, Board* board, Move move) {
         if (move.piece != P && move.piece != p) {
             MoveList all_moves;
             generate_all_moves(board, &all_moves);
+
             int file_ambiguous = 0, rank_ambiguous = 0;
+
             for (int i = 0; i < all_moves.count; i++) {
                 Move other = all_moves.moves[i];
+
                 if (other.from != move.from && other.to == move.to && other.piece == move.piece) {
                     if ((other.from % 8) == (move.from % 8)) rank_ambiguous = 1;
                     if ((other.from / 8) == (move.from / 8)) file_ambiguous = 1;
@@ -271,10 +264,12 @@ void move_to_san(char* san_string, Board* board, Move move) {
             }
             if (file_ambiguous && rank_ambiguous) {
                 strcat(san_string, square_to_algebraic[move.from]);
-            } else if (rank_ambiguous) {
+            } 
+            else if (rank_ambiguous) {
                 char from_file[2] = { square_to_algebraic[move.from][0], '\0' };
                 strcat(san_string, from_file);
-            } else if (file_ambiguous) {
+            } 
+            else if (file_ambiguous) { // This handles file ambiguity without rank ambiguity
                 char from_rank[2] = { square_to_algebraic[move.from][1], '\0' };
                 strcat(san_string, from_rank);
             }
@@ -290,8 +285,10 @@ void move_to_san(char* san_string, Board* board, Move move) {
     }
 
     // --- Simplified Check Detection (to avoid stack overflow) ---
+    // Make the move on a copy to see if it results in a check.
     Board board_copy = *board;
     make_move(&board_copy, move);
+    
     int opponent_side = board_copy.side_to_move;
     u64 king_bb = board_copy.piece_bitboards[opponent_side == WHITE ? K : k];
 
