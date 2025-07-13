@@ -20,6 +20,7 @@ void divide(Board* board, int depth) {
 
     for (int i = 0; i < move_list.count; i++) {
         Move current_move = move_list.moves[i];
+        Board board_before_move= *board;
         make_move(board, current_move);
 
         u64 king_bb = board->piece_bitboards[current_side == WHITE ? K : k];
@@ -31,7 +32,7 @@ void divide(Board* board, int depth) {
                 
                 // Use the new SAN converter for printing!
                 char san_move[16];
-                move_to_san(san_move, board, current_move); // Pass the board *before* the move
+                move_to_san(san_move, &board_before_move, current_move); // Pass the board *before* the move
                 
                 printf("%s: %ld\n", san_move, nodes);
                 total_nodes += nodes;
@@ -67,7 +68,7 @@ int main() {
     printf("\n--- Position: Check Test ---\n");
     // Black is in check and must respond. Only legal moves, Nxf6, Qxf6, gxf6, Ke7
     // Expected: 1: 4,
-    divide(&board, 1);
+    divide(&board, 2);
 
     return 0;
 }
