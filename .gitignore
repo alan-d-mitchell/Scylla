@@ -1,5 +1,5 @@
 /bin/
+/.vscode/
 
-.txt
-.vscode/
-.nnue
+*.txt
+*.nnue
