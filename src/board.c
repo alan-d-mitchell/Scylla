@@ -166,6 +166,7 @@ void parse_fen(Board* board, const char* fen) {
     board->side_to_move = 0;
     board->enpassant_square = -1;
     board->castling_rights = 0;
+    board->ply = 0;
     
     char fen_copy[256];
     strncpy(fen_copy, fen, 255);
@@ -227,14 +228,9 @@ void parse_fen(Board* board, const char* fen) {
 
 void move_to_san(char* san_string, Board* board, Move move) {
     if (move.is_castle) {
-        if (move.to > move.from) {
-            strcpy(san_string, "O-O");
-        }
-        else {
-            strcpy(san_string, "O-O-O");
-        }
-    } 
-    else {
+        if (move.to > move.from) strcpy(san_string, "O-O");
+        else strcpy(san_string, "O-O-O");
+    } else {
         char to_str[3];
         strcpy(to_str, square_to_algebraic[move.to]);
         san_string[0] = '\0';
@@ -242,36 +238,34 @@ void move_to_san(char* san_string, Board* board, Move move) {
         if (move.piece != P && move.piece != p) {
             char piece_ch[2] = { toupper(piece_to_char[move.piece]), '\0' };
             strcat(san_string, piece_ch);
-        } 
-        else if (move.is_capture) {
+        } else if (move.is_capture) {
             char from_file[2] = { square_to_algebraic[move.from][0], '\0' };
             strcat(san_string, from_file);
         }
 
+        // Disambiguation logic (simplified for now)
         if (move.piece != P && move.piece != p) {
             MoveList all_moves;
             generate_all_moves(board, &all_moves);
-
-            int file_ambiguous = 0, rank_ambiguous = 0;
-
+            int file_ambiguous = 0, rank_ambiguous = 0, needs_disambiguation = 0;
             for (int i = 0; i < all_moves.count; i++) {
                 Move other = all_moves.moves[i];
-
                 if (other.from != move.from && other.to == move.to && other.piece == move.piece) {
+                    needs_disambiguation = 1;
                     if ((other.from % 8) == (move.from % 8)) rank_ambiguous = 1;
                     if ((other.from / 8) == (move.from / 8)) file_ambiguous = 1;
                 }
             }
-            if (file_ambiguous && rank_ambiguous) {
-                strcat(san_string, square_to_algebraic[move.from]);
-            } 
-            else if (rank_ambiguous) {
-                char from_file[2] = { square_to_algebraic[move.from][0], '\0' };
-                strcat(san_string, from_file);
-            } 
-            else if (file_ambiguous) { // This handles file ambiguity without rank ambiguity
-                char from_rank[2] = { square_to_algebraic[move.from][1], '\0' };
-                strcat(san_string, from_rank);
+            if (needs_disambiguation) {
+                if (file_ambiguous && rank_ambiguous) {
+                    strcat(san_string, square_to_algebraic[move.from]);
+                } else if (file_ambiguous) {
+                    char from_rank[2] = { square_to_algebraic[move.from][1], '\0' };
+                    strcat(san_string, from_rank);
+                } else { // Default to file if ambiguous at all
+                    char from_file[2] = { square_to_algebraic[move.from][0], '\0' };
+                    strcat(san_string, from_file);
+                }
             }
         }
         
@@ -284,20 +278,43 @@ void move_to_san(char* san_string, Board* board, Move move) {
         }
     }
 
-    // --- Simplified Check Detection (to avoid stack overflow) ---
-    // Make the move on a copy to see if it results in a check.
-    Board board_copy = *board;
-    make_move(&board_copy, move);
+    // --- Check and Checkmate Detection ---
+    Board board_after_move = *board;
+    make_move(&board_after_move, move);
     
-    int opponent_side = board_copy.side_to_move;
-    u64 king_bb = board_copy.piece_bitboards[opponent_side == WHITE ? K : k];
+    int opponent_side = board_after_move.side_to_move;
+    int opponent_king_piece = (opponent_side == WHITE) ? K : k;
+    u64 opponent_king_bb = board_after_move.piece_bitboards[opponent_king_piece];
 
-    if (king_bb) {
-        int king_sq = __builtin_ctzll(king_bb);
-        if (is_square_attacked(king_sq, !opponent_side, &board_copy)) {
-            // We won't check for mate to prevent deep recursion and stack issues.
-            // For debugging and most UIs, just indicating a check is enough.
-            strcat(san_string, "+");
+    // Make sure the king is still on the board (wasn't a bugged capture)
+    if (opponent_king_bb == 0) return;
+
+    int opponent_king_sq = __builtin_ctzll(opponent_king_bb);
+
+    // Is the opponent in check?
+    if (is_square_attacked(opponent_king_sq, !opponent_side, &board_after_move)) {
+        // To check for mate, we see if the opponent has any legal moves.
+        MoveList opponent_moves;
+        generate_all_moves(&board_after_move, &opponent_moves);
+        int has_legal_move = 0;
+
+        for (int i = 0; i < opponent_moves.count; ++i) {
+            Board board_after_reply = board_after_move;
+            make_move(&board_after_reply, opponent_moves.moves[i]);
+
+            int reply_king_sq = __builtin_ctzll(board_after_reply.piece_bitboards[opponent_king_piece]);
+            
+            // If the king is NOT attacked after the reply, it's a legal move.
+            if (!is_square_attacked(reply_king_sq, !opponent_side, &board_after_reply)) {
+                has_legal_move = 1;
+                break; // Found a legal move, so it's not mate.
+            }
+        }
+
+        if (has_legal_move) {
+            strcat(san_string, "+"); // It's just a check
+        } else {
+            strcat(san_string, "#"); // No legal moves, it's checkmate
         }
     }
 }
