@@ -5,6 +5,7 @@
 #include "search.h"
 #include "evaluate.h"
 #include "movegen.h"
+#include "transpose.h"
 
 void run_test(const char* fen, int depth) {
     printf("\n--- Testing Position ---\n");
@@ -19,7 +20,9 @@ void run_test(const char* fen, int depth) {
 
 int main() {
     init_evaluation_masks();
+    init_zobrist_keys();
     init_attack_tables();
+    init_transposition_table();
 
     // --- Test 1: Starting Position ---
     const char* start_pos_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";

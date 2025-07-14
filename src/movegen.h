@@ -22,6 +22,10 @@ extern u64 king_attacks[64];
 extern SMagic mBishopTbl[64];
 extern SMagic mRookTbl[64];
 
+// PRNG
+void seed_prng(unsigned int seed);
+u64 rand64_prng();
+
 // Initialization function
 void init_attack_tables();
 

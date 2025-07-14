@@ -28,7 +28,7 @@ PERFT_TEST_TARGET = $(BIN_DIR)/perft_test
 PERFT_TEST_OBJS = $(OBJ_DIR)/perft_test.o $(OBJ_DIR)/perft.o $(OBJ_DIR)/movegen.o $(OBJ_DIR)/board.o $(OBJ_DIR)/bitboard.o
 
 SEARCH_TEST_TARGET = $(BIN_DIR)/search_eval_test
-SEARCH_TEST_OBJS = $(OBJ_DIR)/search_eval_test.o $(OBJ_DIR)/search.o $(OBJ_DIR)/evaluate.o $(OBJ_DIR)/movegen.o $(OBJ_DIR)/board.o $(OBJ_DIR)/bitboard.o
+SEARCH_TEST_OBJS = $(OBJ_DIR)/search_eval_test.o $(OBJ_DIR)/search.o $(OBJ_DIR)/evaluate.o $(OBJ_DIR)/movegen.o $(OBJ_DIR)/board.o $(OBJ_DIR)/bitboard.o $(OBJ_DIR)/transpose.o
 
 
 # --- Build Rules ---

@@ -6,8 +6,9 @@
 #include "evaluate.h"
 #include "movegen.h"
 #include "board.h"
+#include "transpose.h"
 
-// --- NEW: Move Ordering ---
+// --- Move Ordering ---
 // Assigns a score to each move to help the search algorithm
 // prioritize more promising moves.
 
@@ -38,15 +39,11 @@ static int get_piece_on_square(Board* board, int square) {
             return piece;
         }
     }
-    return -1; // Should not happen in a valid position
+    return -1;
 }
 
-// Comparison function for qsort to sort moves by score
 static int compare_moves(const void* a, const void* b) {
-    Move* moveA = (Move*)a;
-    Move* moveB = (Move*)b;
-    // We want to sort in descending order
-    return moveB->score - moveA->score;
+    return ((Move*)b)->score - ((Move*)a)->score;
 }
 
 static void score_moves(Board* board, MoveList* move_list) {
@@ -56,28 +53,16 @@ static void score_moves(Board* board, MoveList* move_list) {
 
         if (move->is_capture) {
             int victim = get_piece_on_square(board, move->to);
-            // Ensure victim is valid and of the opponent's color
             if (victim != -1) {
-                // Normalize piece indices for the mvv_lva_scores table
                 int attacker_idx = move->piece % 6;
                 int victim_idx = victim % 6;
-                score = mvv_lva_scores[victim_idx][attacker_idx] + 10000; // Add a large bonus for any capture
+                score = mvv_lva_scores[victim_idx][attacker_idx] + 10000;
             }
         }
-        // In a more advanced engine, we would add scores for killer moves,
-        // history heuristic, etc. here. For now, we just prioritize captures.
-
         move->score = score;
     }
-    // Sort the move list based on the scores we just assigned
     qsort(move_list->moves, move_list->count, sizeof(Move), compare_moves);
 }
-
-// Forward declarations
-static int quiescence_search(Board* board, int alpha, int beta);
-static int negamax(Board* board, int depth, int alpha, int beta);
-
-// --- Search Functions (largely the same, but now use the sorted move list) ---
 
 static int quiescence_search(Board* board, int alpha, int beta) {
     int stand_pat = evaluate(board);
@@ -86,61 +71,128 @@ static int quiescence_search(Board* board, int alpha, int beta) {
 
     MoveList move_list;
     generate_all_moves(board, &move_list);
-    score_moves(board, &move_list); // Score and sort moves
+    score_moves(board, &move_list);
 
     int original_side = board->side_to_move;
     for (int i = 0; i < move_list.count; i++) {
         Move move = move_list.moves[i];
-        if (!move.is_capture) continue; // Only consider captures
+        if (!move.is_capture) continue;
 
         make_move(board, move);
-        int king_square = __builtin_ctzll(board->piece_bitboards[original_side == WHITE ? K : k]);
-        if (!is_square_attacked(king_square, !original_side, board)) {
-            int score = -quiescence_search(board, -beta, -alpha);
-            unmake_move(board, move);
-            if (score >= beta) return beta;
-            if (score > alpha) alpha = score;
-        } else {
-            unmake_move(board, move);
+        u64 king_bb = board->piece_bitboards[original_side == WHITE ? K : k];
+        if (king_bb != 0) {
+            int king_square = __builtin_ctzll(king_bb);
+            if (!is_square_attacked(king_square, !original_side, board)) {
+                int score = -quiescence_search(board, -beta, -alpha);
+                if (score >= beta) {
+                    unmake_move(board, move);
+                    return beta;
+                }
+                if (score > alpha) alpha = score;
+            }
         }
+        unmake_move(board, move);
     }
     return alpha;
 }
 
-static int negamax(Board* board, int depth, int alpha, int beta) {
-    if (depth == 0) return quiescence_search(board, alpha, beta);
+
+static int negamax(Board* board, int depth, int alpha, int beta, int is_null) {
+    int hash_flag = HASH_FLAG_ALPHA;
+    int score = probe_hash(board->hash_key, depth, alpha, beta);
+    if (score != NO_HASH_ENTRY && !is_null) {
+        return score;
+    }
+
+    if (depth == 0) {
+        return quiescence_search(board, alpha, beta);
+    }
+
+    // --- Safe Null-Move Pruning ---
+    u64 king_bb = board->piece_bitboards[board->side_to_move == WHITE ? K : k];
+    if (!is_null && king_bb != 0) {
+        int king_sq = __builtin_ctzll(king_bb);
+        if (!is_square_attacked(king_sq, !board->side_to_move, board)) {
+            // Manually update board state for the null move
+            int original_ep_square = board->enpassant_square;
+            board->ply++;
+            board->side_to_move = !board->side_to_move;
+            board->hash_key ^= side_key;
+            if (board->enpassant_square != -1) {
+                board->hash_key ^= enpassant_keys[board->enpassant_square];
+            }
+            board->enpassant_square = -1;
+            
+            score = -negamax(board, depth - 1 - 2, -beta, -beta + 1, 1);
+            
+            // Manually restore the board state
+            board->ply--;
+            board->side_to_move = !board->side_to_move;
+            board->hash_key ^= side_key;
+            board->enpassant_square = original_ep_square;
+             if (board->enpassant_square != -1) {
+                board->hash_key ^= enpassant_keys[board->enpassant_square];
+            }
+
+            if (score >= beta) {
+                return beta;
+            }
+        }
+    }
 
     MoveList move_list;
     generate_all_moves(board, &move_list);
-    score_moves(board, &move_list); // Score and sort moves
+    score_moves(board, &move_list);
 
     int moves_made = 0;
     int best_score = -INFINITY;
     int original_side = board->side_to_move;
+
     for (int i = 0; i < move_list.count; i++) {
         make_move(board, move_list.moves[i]);
-        int king_square = __builtin_ctzll(board->piece_bitboards[original_side == WHITE ? K : k]);
-        if (!is_square_attacked(king_square, !original_side, board)) {
-            moves_made++;
-            int score = -negamax(board, depth - 1, -beta, -alpha);
-            unmake_move(board, move_list.moves[i]);
+        u64 current_king_bb = board->piece_bitboards[original_side == WHITE ? K : k];
+        if (current_king_bb != 0) {
+            int king_sq = __builtin_ctzll(current_king_bb);
+            if (!is_square_attacked(king_sq, !original_side, board)) {
+                moves_made++;
+                if (moves_made > 4 && depth > 2 && !move_list.moves[i].is_capture) {
+                    score = -negamax(board, depth - 2, -alpha -1, -alpha, 0);
+                } else {
+                    score = -negamax(board, depth - 1, -alpha -1, -alpha, 0);
+                }
 
-            if (score > best_score) best_score = score;
-            if (best_score > alpha) alpha = best_score;
-            if (alpha >= beta) return beta;
-        } else {
-            unmake_move(board, move_list.moves[i]);
+                if (score > alpha && score < beta) {
+                     score = -negamax(board, depth - 1, -beta, -alpha, 0);
+                }
+
+                if (score > best_score) {
+                    best_score = score;
+                    if (best_score > alpha) {
+                        alpha = best_score;
+                        hash_flag = HASH_FLAG_EXACT;
+                        if (alpha >= beta) {
+                            unmake_move(board, move_list.moves[i]);
+                            record_hash(board->hash_key, depth, beta, HASH_FLAG_BETA);
+                            return beta;
+                        }
+                    }
+                }
+            }
         }
+        unmake_move(board, move_list.moves[i]);
     }
 
     if (moves_made == 0) {
-        int king_square = __builtin_ctzll(board->piece_bitboards[original_side == WHITE ? K : k]);
-        if (is_square_attacked(king_square, !original_side, board)) {
+        int king_sq_final = __builtin_ctzll(board->piece_bitboards[original_side == WHITE ? K : k]);
+        if (is_square_attacked(king_sq_final, !original_side, board)) {
             return -MATE_SCORE + board->ply;
         } else {
             return 0;
         }
     }
+
+    record_hash(board->hash_key, depth, best_score, hash_flag);
+
     return best_score;
 }
 
@@ -149,29 +201,55 @@ Move search_position(Board* board, int depth) {
     int best_score = -INFINITY;
     int original_side = board->side_to_move;
 
-    MoveList move_list;
-    generate_all_moves(board, &move_list);
-    score_moves(board, &move_list); // Score and sort root moves
+    // Aspiration Windows
+    int alpha = -INFINITY, beta = INFINITY;
+    int delta = 25;
 
-    printf("info string searching depth %d\n", depth);
-    for (int i = 0; i < move_list.count; i++) {
-        Move current_move = move_list.moves[i];
-        make_move(board, current_move);
-        int king_square = __builtin_ctzll(board->piece_bitboards[original_side == WHITE ? K : k]);
-        if (is_square_attacked(king_square, !original_side, board)) {
-            unmake_move(board, current_move);
-            continue;
+    for (int current_depth = 1; current_depth <= depth; ++current_depth) {
+        best_score = negamax(board, current_depth, alpha, beta, 0);
+
+        if (best_score <= alpha || best_score >= beta) {
+            alpha = -INFINITY;
+            beta = INFINITY;
+            best_score = negamax(board, current_depth, alpha, beta, 0);
         }
 
-        int score = -negamax(board, depth - 1, -INFINITY, INFINITY);
-        unmake_move(board, current_move);
+        alpha = best_score - delta;
+        beta = best_score + delta;
+        
+        MoveList move_list;
+        generate_all_moves(board, &move_list);
+        score_moves(board, &move_list);
 
-        if (score > best_score) {
-            best_score = score;
-            best_move = current_move;
-            char san_move[16];
-            move_to_san(san_move, board, current_move);
-            printf("info score cp %d move %s\n", score, san_move);
+        printf("info string searching depth %d\n", current_depth);
+        for (int i = 0; i < move_list.count; i++) {
+            Move current_move = move_list.moves[i];
+            make_move(board, current_move);
+
+            u64 king_bb = board->piece_bitboards[original_side == WHITE ? K : k];
+            if (king_bb == 0) {
+                unmake_move(board, current_move);
+
+                continue;
+            }
+            int king_square = __builtin_ctzll(king_bb);
+            if (is_square_attacked(king_square, !original_side, board)) {
+                unmake_move(board, current_move);
+
+                continue;
+            }
+
+            int score = -negamax(board, current_depth - 1, -INFINITY, INFINITY, 0);
+            unmake_move(board, current_move);
+
+            if (score > best_score) {
+                best_score = score;
+                best_move = current_move;
+                char san_move[16];
+
+                move_to_san(san_move, board, current_move);
+                printf("info score cp %d move %s\n", score, san_move);
+            }
         }
     }
     

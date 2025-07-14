@@ -10,6 +10,7 @@ typedef struct {
     int captured_piece;
     int enpassant_square;
     int castling_rights;
+    u64 hash_key;
 } UndoInfo;
 
 extern const char* square_to_algebraic[];
@@ -25,6 +26,7 @@ typedef struct {
     int enpassant_square;
     int castling_rights;
     int ply;
+    u64 hash_key;
     UndoInfo history[256];
 } Board;
 
