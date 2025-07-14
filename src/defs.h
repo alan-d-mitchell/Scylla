@@ -3,8 +3,11 @@
 
 #include <stdint.h>
 
-// A more convenient type for our 64-bit bitboards.
+// More convenient typedefs
+typedef uint32_t u32;
 typedef uint64_t u64;
+typedef int16_t i16;
+typedef int32_t i32;
 
 // --- Enums ---
 enum { P, N, B, R, Q, K, p, n, b, r, q, k };
@@ -32,6 +35,7 @@ typedef struct {
     int is_capture;
     int is_enpassant;
     int is_castle;
+    int score;
 } Move;
 
 // A list to store all generated moves for a position
